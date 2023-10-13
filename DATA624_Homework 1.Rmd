@@ -1,0 +1,250 @@
+---
+title: "Data624_Homework 1 - Time Series"
+author: "Charles Ugiagbe"
+date: "9/14/2023"
+output:
+  html_document:
+    theme: cerulean
+    highlight: pygments
+    toc: true
+    toc_float: true
+---
+
+### Load the required Packages
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(fpp3)
+library(kableExtra)
+library(ggplot2)
+```
+
+
+## Question 2.1 
+Use the help function to explore what the series 'gafa_stock, 'PBS, 'vic_elec and 'pelt represent.
+(a)   Use autoplot() to plot some of the series in these data sets.
+(b)   What is the time interval of each series?
+
+Explore the following four time series: Bricks from aus_production, Lynx from pelt, Close from gafa_stock, Demand from vic_elec.
+
+Use ? (or help()) to find out about the data in each series.
+What is the time interval of each series?
+Use autoplot() to produce a time plot of each series.
+For the last plot, modify the axis labels and title.
+
+##  Solution 2.1
+
+```{r}
+help(aus_production)
+help(pelt)
+help(gafa_stock)
+help(vic_elec)
+```
+
+```{r}
+autoplot(aus_production, Bricks)
+ggtitle("Quarterly production of selected commodities in Australia")
+```
+
+**There is a zig-zag movement in the time series for Aus production**
+
+```{r}
+autoplot(pelt, Lynx) +
+  ggtitle("Canadaian Lync pelts traded 1845-1945")
+```
+**Canadian Lynx furs rises and fall again.The peaks also seem to alternate, where a higher peak is followed by a shorter peak the next cycle.**
+
+## Solution 2.1b
+
+```{r}
+autoplot(gafa_stock, Open) +
+  ggtitle("Daily Opening Price for Stocks Traded, 2014 - 2018")
+```
+**The graph show a considerable steady increase in price over time for Amazon and google. After which there was a small decline from the peak.**
+
+```{r}
+PBS %>%
+  summarise(TotalC = sum(Cost)) %>%
+  autoplot(TotalC) +
+  labs(title = "Total Costs of Scripts in Australia, July 1991 - June 2008",
+       y = "Total Cost ($AUD)")
+```
+
+**The total costs of all Medicare scripts in Australia increased over time. There also seems to be a seasonality, where the total cost takes a dip and then rises again every year.**
+
+```{r}
+autoplot(vic_elec, Demand) +
+  ggtitle("Hald-hourly Electricity Demand for Victoria, Australia")
+```
+There seems to be a seasonality where electricity demands increase greatly during the summers, followed by a decrease and then a small increase midway into the year, around winter. That is followed by a decrease until summer.
+
+
+**What is the time interval of each series?**
+
+gafa_stock: 1 day (excluding weekends)
+PBS: 1 month
+vic_elec: 1 half-hour
+pelt: 1 year
+
+##    Question 2.2 
+
+Use filter() to find what days corresponded to the peak closing price for each of the four stocks in gafa_stock.
+
+##    solution 2.2
+
+```{r}
+gafa_stock %>%
+  group_by(Symbol) %>%
+  filter(Close == max(Close)) %>%
+  select(Symbol, Date)
+```
+
+The peak closing prices were hit between late July to early October for each of the four stocks.
+
+## Question 2.3
+
+Download the file 'tute1.csv from the book website, open it in Excel (or some other spreadsheet application), and review its contents. You should find four columns of information. Columns B through D each contain a quarterly series, labelled Sales, AdBudget and GDP. Sales contains the quarterly sales for a small company over the period 1981-2005. AdBudget is the advertising budget and GDP is the gross domestic product. All series have been adjusted for inflation.
+
+2.3(a) Convert the data to time series
+2.3(b) Construct time series plots of each of the three series
+2.3(c) Check what happens when you don’t include facet_grid().
+
+## Solution 2.3
+
+```{r}
+tute1 <- readr::read_csv("tute1.csv")
+#View(tute1)
+
+mytimeseries <- tute1 %>%
+  mutate(Quarter = yearmonth(Quarter)) %>%
+  as_tsibble(index = Quarter)
+
+mytimeseries %>%
+  pivot_longer(-Quarter) %>%
+  ggplot(aes(x = Quarter, y = value, colour = name)) +
+  geom_line() +
+  facet_grid(name ~ ., scales = "free_y") +
+  ggtitle("facet_grid")
+
+mytimeseries %>%
+  pivot_longer(-Quarter) %>%
+  ggplot(aes(x = Quarter, y = value, colour = name)) +
+  geom_line() +
+  ggtitle("No facet_grid")
+```
+
+When you don’t include facet_grid, the horizontal scales are not aligned, nor, can you see the numbers on the scale properly. It creates a separate graph for each variable.
+
+## Question 2.4
+
+The USgas package contains data on the demand for natural gas in the US.
+
+Install the USgas package.
+
+(b) Create a tsibble from us_total with year as the index and state as the key.
+
+(c) Plot the annual natural gas consumption by state for the New England area (comprising the states of Maine, Vermont, New Hampshire, Massachusetts, Connecticut and Rhode Island).
+
+###  Solution 2.4(a)
+```{r message=TRUE}
+#install.packages("USgas")
+library(USgas)
+```
+
+###  Solution 2.4(b)
+```{r}
+us_total <- us_total %>%
+  as_tibble(key = state,
+            index = year)
+```
+
+###  Solution 2.4(c) 
+```{r}
+us_total %>%
+  filter(state %in% c('Maine', 'Vermont', 'New Hampshire', 'Massachusetts', 'Connecticut', 'Rhode Island')) %>%
+  ggplot(aes(x = year, y = y, colour = state)) +
+  geom_line() +
+  facet_grid(state ~., scales = "free_y") +
+  labs(title = "Annual Natural Gas Consumption in New England",
+       y = "Consumption")
+```
+
+The yearly natural has consumption follows an increasing trend for Connecticut, Massachusetts, and Vermont, and is decreasing in the remaining states.
+
+##    Question 2.5
+
+(a) Download tourism.xlsx from the book website and read it into R using readxl::read_excel().
+(b) Create a tsibble which is identical to the tourism tsibble from the tsibble package.
+(c) Find what combination of Region and Purpose had the maximum number of overnight trips on average.
+(d) Create a new tsibble which combines the Purposes and Regions, and just has total trips by State.
+
+### Solution 2.5(a)
+
+```{r}
+tourism <- readxl::read_excel("tourism.xlsx")
+```
+
+### solution 2.5(b)
+```{r}
+tourism_ts <- tourism %>%
+  mutate(Quarter = yearquarter(Quarter)) %>%
+  as_tsibble(key = c(Region, State, Purpose),
+             index = Quarter)
+```
+
+### solution 2.5(c)
+```{r}
+tourism_ts %>%
+  group_by(Region, Purpose) %>%
+  mutate(Avg_Trips = mean(Trips)) %>%
+  ungroup() %>%
+  filter(Avg_Trips == max(Avg_Trips)) %>%
+  distinct(Region, Purpose)
+```
+
+Syndey, Australia has the maximum number of overnight trips on average for Visiting.
+
+### solution 2.5(d)
+```{r}
+tourism %>%
+  group_by(Quarter, State) %>%
+  mutate(Quarter = yearquarter(Quarter),
+         Total_Trips = sum(Trips)) %>%
+  select(Quarter, State, Total_Trips) %>%
+  distinct() %>%
+  as_tsibble(index = Quarter,
+             key = State)
+```
+
+##  Question 2.8
+Monthly Australian retail data is provided in aus_retail. Explore your chosen retail time series using the following functions: autoplot(), gg_season(), gg_subseries(), gg_lag(), ACF() %>% autoplot().
+
+## solution 2.8
+
+```{r}
+set.seed(222)
+myseries <- aus_retail %>%
+  filter(`Series ID` == sample(aus_retail$`Series ID`,1))
+autoplot(myseries, Turnover)
+```
+
+
+```{r}
+myseries %>% gg_season(Turnover)
+```
+
+```{r}
+myseries %>% gg_subseries(Turnover)
+```
+
+
+```{r}
+myseries %>% gg_lag(Turnover, geom = "point")
+```
+
+
+```{r}
+myseries %>% ACF(Turnover) %>% autoplot()
+```
+
+It is observe that there is a steady increase in the retail trade turnover,with a cyclicity of a year. Every year seems to have similar seasonality as the previous year. The turnover seems to increase from November to December and then decreasing to February. There is also a small increase from June to July and a small decrease from October to November. From the series, it can be assumed that sales increase around the holiday season and then decrease afterwards.
