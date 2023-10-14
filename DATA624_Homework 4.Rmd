@@ -1,0 +1,158 @@
+---
+title: "Homework 4 - Data Preprocessing/Overfitting"
+output:
+  html_document:
+    highlight: pygments
+    theme: cerulean
+    toc: true
+    toc_float: true
+  pdf_document: default
+editor_options: 
+  chunk_output_type: inline
+---
+
+### Name: Charles Ugigabe.
+### Date: 10/14/23
+
+```{r message=FALSE, warning=FALSE}
+library(mlbench)
+library(tidyverse)
+library(corrplot)
+```
+
+
+## Question 3.1
+
+The UC Irvine Machine Learning Repository contains a data set related to glass identification. The data consist of 214 glass samples labeled as one of seven class categories. There are nine predictors, including the refractive index and percentages of eight elements: Na, Mg, Al, Si, K, Ca, Ba, and Fe.
+
+* (a) Using visualizations, explore the predictor variables to understand their distributions as well as the relationships between predictors.
+
+## solution 3.1
+
+```{r}
+data(Glass)
+str(Glass)
+```
+
+```{r}
+Glass %>%
+  keep(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(value)) + 
+  geom_histogram(bins = 15,aes(x=value, y = ..density..),fill="gray", color="#e9ecef") + 
+  geom_density(aes(x=value), color='red', lwd = 0.8) +
+  facet_wrap(~key, scales = 'free') +
+  ggtitle("Histograms of Numerical Predictors")
+
+```
+
+```{r}
+Glass %>%
+  keep(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(value)) + 
+  geom_boxplot() + 
+  facet_wrap(~key, scales = 'free') +
+  ggtitle("Boxplots of Numerical Predictors")
+```
+
+
+#### Numeric Data
+
+* Al - right skewed
+* Ba - right skewed, outlier
+* Ca - right skewed, outlier
+* Fe - right skewed, outlier
+* K - right skewed, outlier, bimodal
+* Mg - left skewed, bimodal
+* Na - Close to near normal
+* RI - right skewed
+* Si - left skewed
+
+
+```{r}
+Glass %>%
+  keep(is.numeric) %>%
+  cor() %>%
+  corrplot() 
+
+Glass %>%
+  ggplot() +
+  geom_bar(aes(x = Type)) +
+  ggtitle("Distribution of Types of Glass")
+```
+
+
+##### Correlation Matrix
+
+
+* Strong Negative Relationships variables
+* Ca / Mg; RI / Si; RI / Al; Mg / Al; Mg / Ba
+
+* Strong Positive Relationships
+* Ca / RI; K / Al; Al / Ba; Na / Ba
+
+
+There seems to be outliers in Ba, K, RI, Ca, and Fe. 
+As mention earlier, there is right skewed in Al, Ba, Ca, Fe, K and Ri while there is a left skewness in Mg and Si
+
+#### (b) Do there appear to be any outliers in the data? Are any predictors skewed?
+
+**It appears that there are outliers in some of the variables in the dataset. Ba, Ca, Fe, K, Mg, and Na appear to have observations that are outliers to the rest of the variable. There are also predictors that have a skewed data distribution. Ca, Ba, Na, and RI are right skewed. Mg and Si are left skewed.**
+
+#### (c) Are there any relevant transformations of one or more predictors that might improve the classification model?
+
+
+**Box-Cox transformation would be very helpful in improving the classification model. For the predictors with outliers we can use a log, square root and spatial sign transformation.**
+
+
+## Question 3.2  
+
+The soybean data can also be found at the UC Irvine Machine Learning Repository. Data were collected to predict disease in 683 soybeans. The 35 predictors are mostly categorical and include information on the environmental conditions (e.g., temperature, precipitation) and plant conditions (e.g., left spots, mold growth). The outcome labels consist of 19 distinct classes.
+
+* (a) Investigate the frequency distributions for the categorical predictors. Are any of the distributions degenerate in the ways discussed earlier in this chapter?
+
+
+```{r}
+soybean <- data(Soybean)
+Soybean %>%  select(!Class)%>%  drop_na() %>%  gather() %>% ggplot(aes(value)) +  geom_bar() +  facet_wrap(~ key)
+```
+
+
+**Degenerate distributions are distributions where the variable primarily takes one value and others occur at a very low rate. Here we can say ‘mycelium’, ‘scleroita’, and ‘roots’ seem to be degenerate.**
+
+
+*(b) Roughly 18 % of the data are missing. Are there particular predictors that are more likely to be missing? Is the pattern of missing data related to the classes?**
+
+```{r}
+Soybean %>%
+  summarise_all(list(~is.na(.)))%>%
+  pivot_longer(everything(), names_to = "variables", values_to="missing") %>%
+  count(variables, missing) %>%
+  ggplot(aes(y = variables, x=n, fill = missing))+
+  geom_col(position = "fill") +
+  labs(title = "Proportion of Missing Values",
+       x = "Proportion") +
+  scale_fill_manual(values=c("grey","violet"))
+```
+
+
+```{r}
+Soybean %>%
+  group_by(Class) %>%
+  mutate(class_Total = n()) %>%
+  ungroup() %>%
+  filter(!complete.cases(.)) %>%
+  group_by(Class) %>%
+  mutate(Missing = n(),
+         Proportion =  Missing / class_Total) %>% 
+  ungroup()%>%
+  select(Class, Proportion) %>%
+  distinct() 
+```
+
+**There does seem to be a pattern in that some of the cases that are missing data are affiliated with certain cases. After those five classes were removed from the data, there seems to be no missing data.**
+
+*(c) Develop a strategy for handling missing data, either by eliminating predictors or imputation.
+
+**Imputation method of handling missing data is one way we can account for missing data without getting rid of it all together. For the imputation strategy we can fill the missing data with several values such as: maxia, minima, mean, or median. For this strategy filling in the missing data with the mean for that column would be the best approach.**
