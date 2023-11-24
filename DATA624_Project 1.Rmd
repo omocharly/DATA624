@@ -1,0 +1,899 @@
+---
+title: "DATA 624 Project 1"
+output:
+  html_document:
+    highlight: pygments
+    theme: cerulean
+    toc: true
+    toc_float: true
+  pdf_document: default
+editor_options: 
+  chunk_output_type: inline
+---
+
+### Name: Charles Ugiagbe.
+### Date: 11/11/23
+
+```{r message=FALSE, warning=FALSE}
+library(fpp3)
+library(tidyverse)
+library(readxl)
+library(kableExtra)
+library(openxlsx)
+library(forecast)
+```
+
+# Part A: ATM Withdrawal Forcast.
+
+### Read the data into R
+```{r message=FALSE, warning=FALSE}
+atm_data <- read_csv("ATM624Data.csv")
+
+head(atm_data)
+```
+### Data Cleaning and Renaming
+```{r}
+# Change DATE column to a proper date format
+atm_data$DATE <- as.Date(mdy_hms(atm_data$DATE, tz="EST"))
+
+# Change column names
+names(atm_data) <- c("date","ATM","amount")
+
+head(atm_data)
+```
+
+### Check for missing values
+
+```{r}
+missing <- atm_data %>% filter(is.na(date)) %>% nrow() %>% tibble(date = .)
+missing <- atm_data %>% filter(is.na(ATM)) %>% nrow() %>%
+  tibble(ATM = .) %>% cbind(missing,.)
+missing <- atm_data %>% filter(is.na(amount)) %>% nrow() %>%
+  tibble(amount = .) %>% cbind(missing,.)
+
+rownames(missing) <- "NA Values"
+
+kbl(missing) %>% kable_paper("striped", full_width = F, position="left") %>%
+  add_header_above(c("Column Name" = 4))
+```
+
+**There are 19 records where no amount is recorded and 14 records where no machine is recorded**
+```{r}
+atm_data %>% filter(is.na(amount) | is.na(ATM))
+```
+
+**Inspecting the output, we see that some of the records that are missing amount are also missing machine.  to forecast, we’ll remove those from the data set.**
+
+```{r}
+# Keep only where both amount and machine are not NA
+atm_data <- atm_data %>% filter(!(is.na(amount) & is.na(ATM)))
+
+# Re-check
+atm_data %>% filter(is.na(amount))
+```
+
+```{r}
+atm_data$weekday <- atm_data$date %>% wday()
+```
+
+
+```{r}
+# Function to return the value of the amount from 7 days previous for the
+#   same machine.
+lastWeekday <- function(d, m){
+  d <- d-7
+  i <- atm_data %>% filter(date == d, ATM == m) %>%
+    select(amount) %>% as.double()
+  return(i)
+}
+
+lastWeekday <- Vectorize(lastWeekday)
+
+atm_data[is.na(atm_data$amount),"amount"] <- atm_data %>% filter(is.na(amount)) %>%
+  mutate(imputed = lastWeekday(date, ATM)) %>% select(imputed)
+```
+
+**we then search for outliers. We’ll start by plotting the data:**
+
+```{r}
+atm_data %>% ggplot(aes(x=date,y=amount,color=ATM)) + geom_line() +
+  facet_wrap(ATM ~ ., scales = "free") +
+  theme_light() +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %y") +
+  scale_color_discrete(name="Machine") +
+  labs(title="Cash Withdrawals by ATM", y="Amount (100's of $)",
+       x="Date")
+```
+
+**Two issues can be seen in the graphs above. The first is that ATM3 only has a few non-zero data points. Forecasting with those data will be nearly impossible to do accurately.**
+
+**The second issue is that ATM4 appears to have a single, large outlier at date 2010-02-09. Let’s look more closely at that.**
+
+```{r}
+days <- c("Sunday","Monday","Tuesday","Wednesday","Thursday",
+          "Friday","Saturday")
+
+atm_data %>% filter(ATM == "ATM4") %>% ggplot(aes(x=date, y=amount)) +
+  geom_line() + theme_light() +
+  theme(axis.text.x = element_blank()) + 
+  facet_wrap(ordered(weekday,labels=days) ~ .,scales="free_y") +
+  labs(title="ATM4", subtitle="By Day of Week", x=NULL, y= NULL)
+```
+
+**We can see that the suspected outlier was recorded on a Tuesday and is well above the other values recorded on a Tuesday (or any other weekday for that matter).**
+
+If we look at the data points surrounding it, that outlier value does not look like a part of a localized trend (say, in advance of Valentine’s Day):
+
+
+```{r}
+atm_data %>% filter(date <= as.Date('2010-03-09'),
+               date >= as.Date('2010-01-09'),
+               ATM=="ATM4") %>%
+  ggplot(aes(x=date,y=amount)) + geom_line() +
+  theme_light() +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d") +
+  labs(title="Cash Withdrawals at ATM4", 
+       subtitle="01/09/10 - 03/09/10",
+       y="Amount (100's of $)",
+       x="Date")
+```
+
+**So, we assume this is some sort of data entry issue and will replace this value with the mean of the Tuesday amounts for ATM4.**
+
+
+```{r}
+# Mean value withdrawn on Tuesdays at ATM4
+replacement <- atm_data %>% filter(ATM=="ATM4",weekday==3) %>% summarize(mean(amount))
+
+# Replace outlier value
+atm_data[which(atm_data$date==as.Date("2010-02-09") & atm_data$ATM=="ATM4"),"amount"] <- replacement
+```
+
+
+### Splitting
+Now that we have the data more or less how we want it in terms of data types, we will split each machine into it’s own data set and convert them into time series.
+
+```{r}
+atm1 <- atm_data %>% filter(ATM=="ATM1") %>% select(amount) %>%
+  ts(frequency = 7, start=c(strftime(as.Date("2009-05-01"),'%w'),
+                            strftime(as.Date("2009-05-01"),'%W')))
+
+atm2 <- atm_data %>% filter(ATM=="ATM2") %>% select(amount) %>%
+  ts(frequency = 7, start=c(strftime(as.Date("2009-05-01"),'%w'),
+                            strftime(as.Date("2009-05-01"),'%W')))
+
+atm3 <- atm_data %>% filter(ATM=="ATM3") %>% select(amount) %>%
+  ts(frequency = 7, start=c(strftime(as.Date("2009-05-01"),'%w'),
+                            strftime(as.Date("2009-05-01"),'%W')))
+
+atm4 <- atm_data %>% filter(ATM=="ATM4") %>% select(amount) %>%
+  ts(frequency = 7, start=c(strftime(as.Date("2009-05-01"),'%w'),
+                            strftime(as.Date("2009-05-01"),'%W')))
+```
+
+
+### Exploratory Analysis
+
+First, let’s plot the series for each ATM:
+
+```{r}
+atm1 %>% autoplot() + theme_light() +
+  labs(title="Withdrawals from ATM1", y="Amount (100's of $)",
+       x="Week")
+```
+
+```{r}
+atm2 %>% autoplot() + theme_light() +
+  labs(title="Withdrawals from ATM2", y="Amount (100's of $)",
+       x="Week")
+```
+
+
+```{r}
+atm3 %>% autoplot() + theme_light() +
+  labs(title="Withdrawals from ATM3", y="Amount (100's of $)",
+       x="Week")
+```
+
+
+```{r}
+atm4 %>% autoplot() + theme_light() +
+  labs(title="Withdrawals from ATM4", y="Amount (100's of $)",
+       x="Week")
+
+```
+
+TM1 appears to have some weekly seasonality.
+
+ATM2 also appears to have a similar weekly seasonality.
+
+ATM3, as previously discussed, does not have enough data to really forecast well.
+
+ATM4, unlike the other machines’ data, appears to be rather random - like white noise.
+
+### Modeling
+Now we’ll look at models for each ATM, starting with ATM1.
+
+ATM1
+First we’ll try to stabilize the series with a Box Cox transform:
+
+```{r}
+l <- BoxCox.lambda(atm1)
+atm1.trans <- BoxCox(atm1,lambda=l)
+
+autoplot(cbind(original = atm1, transformed=atm1.trans), facets=T) +
+  theme_light() +
+  labs(title="Withdrawals from ATM1", y="Amount (100's of $)",
+       x="Week")
+```
+
+Looking at the plots above, the Box Cox transform seems to stabilize some of the variance in the data using λ=
+ 0.25.
+
+Next we’ll split the data sets into a training set and a testing set, holding out 60 days for testing and the rest for training the models:
+
+```{r}
+atm1.train <- subset(atm1.trans,end=length(atm1.trans)-60)
+atm1.test <- subset(atm1.trans, start=length(atm1.trans)-59)
+```
+
+Next, we’ll look at various models to see how they perform on the training data set.
+
+We’ll begin using a seasonal naive forecast:
+
+```{r}
+atm1.snaive <- snaive(atm1.train,h=31, biasadj=T)
+
+accuracy(atm1.snaive)
+```
+There appears to be some numerical instability in some of the error rates, but the RMSE and MASE are interpretable. The MASE shows us that this forecast is equal to a naive forecast (which this is a seasonal version of). Let’s look at the plot:
+
+```{r}
+autoplot(atm1.snaive, PI=F) + theme_light() +
+  labs(title="Withdrawals from ATM1",
+       subtitle = "Seasonal Naive Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+**As expected, the snaive() model is really just adding in the seasonal component to the last value.**
+
+Next, we’ll try the Holt-Winters method using additive seasonality:**
+
+```{r}
+# Use Holt-Winters method
+atm1.hw <- hw(atm1.train, seasonal = "additive", h=31, biasadj = T)
+
+accuracy(atm1.hw)
+```
+Our RMSE and MASE accuracy measures both decreased from the seasonal naive method above.
+
+
+```{r}
+autoplot(atm1.hw, PI=F, series = "Holt-Winters") + theme_light() +
+  labs(title="Withdrawals from ATM1",
+       subtitle = "Holt-Winters Seasonal Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+The predictions from the Holt-Winters are flatter than the Seasonal Naive forecast, and don’t seem to take into account some of the positive spikes seen in the past data. This may be ok, though, as it may generalize better on unseen data.
+
+The error measures RMSE and MASE are an improvement over the Seasonal Naive model, though.
+
+Finally, we’ll try a seasonal ARIMA model:
+
+
+```{r}
+atm1.arima <- auto.arima(atm1.train)
+
+atm1.arima
+```
+
+The auto.arima() function chose an ARIMA(0,0,2)(0,1,1)[7]
+ model. This makes sense, as it there should be little correlation with previous withdrawal amounts, yet some change in seasonality variance over time.
+
+
+```{r}
+accuracy(atm1.arima)
+```
+The RMSE is only slightly lower with this ARIMA model and the MASE is actually a bit worse, when compared to the Holt-Winters model.
+
+
+```{r}
+atm1.pred <- forecast(atm1.arima,h=31)
+
+autoplot(atm1.pred, PI=F) + theme_light() +
+  labs(title="Withdrawals from ATM1",
+       subtitle = "ARIMA(0,0,1)(0,1,2)[7] Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+
+The ARIMA model predictions strongly resemble the Holt-Winters model above. Let’s look at the residuals:
+
+```{r}
+checkresiduals(atm1.arima)
+```
+
+The residuals are not really normal, though the Ljung-Box test confirms there is a lack of significant correlation.
+
+Now, we will evaluate the accuracy measures with the test set:
+
+
+```{r}
+# Check test set accuracy measures
+testMeasures <- cbind(method = "Seasonal Naive", 
+                      data.frame(
+                        as.list(accuracy(atm1.snaive, atm1.test)["Test set",])
+                      ))
+
+testMeasures <- rbind(testMeasures,
+  cbind(method = "Holt-Winters", 
+                      data.frame(
+                        as.list(accuracy(atm1.hw, atm1.test)["Test set",])
+                      ))
+)
+
+atm1.pred <- Arima(atm1.test,model=atm1.arima,h=31, biasadj=T)
+
+testMeasures <- rbind(testMeasures,
+  cbind(method = "ARIMA", 
+                      data.frame(
+                        as.list(accuracy(atm1.pred)["Training set",])
+                      ), Theil.s.U = NA))
+
+testMeasures %>% select(method, RMSE, MASE) %>%
+  kable() %>% kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+
+**The ARIMA model seems to generalize very well, as it has the best error metrics using the testing data set. So we will use that model for our predicted values for May 2010:**
+
+
+```{r}
+atm1.forecast <- forecast(atm1, model = atm1.arima, h=31, biasadj = T)
+
+atm1.forecast %>%
+  kable() %>% kable_styling(bootstrap_options = "striped") %>%
+  scroll_box(width = "100%", height = "200px")
+```
+
+
+```{r}
+# Output point forecasts
+output <- cbind(date = seq(from=as.Date("2010-05-01"),
+                           to=as.Date("2010-05-31"),by=1),
+      point_forecast = as.data.frame(atm1.forecast$mean))
+
+write.xlsx(output,"forecast_ATM1.xlsx")
+
+autoplot(atm1.forecast, PI=T) +
+  theme_light() +
+  labs(title="Withdrawals from ATM1",
+       subtitle = "ARIMA(0,0,1)(0,1,2)[7] Forecasts",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+ATM2
+As we did for ATM1 above, we’ll try to stabilize the series with a Box Cox transform:
+
+```{r}
+l <- BoxCox.lambda(atm2)
+atm2.trans <- BoxCox(atm2,lambda=l)
+
+autoplot(cbind(original = atm2, transformed=atm2.trans), facets=T) +
+  theme_light() +
+  labs(title="Withdrawals from ATM2", y="Amount (100's of $)",
+       x="Week")
+```
+
+
+```{r}
+atm2.train <- subset(atm2.trans,end=length(atm2.trans)-60)
+atm2.test <- subset(atm2.trans, start=length(atm2.trans)-59)
+```
+
+We’ll again begin using a seasonal naive forecast:
+
+```{r}
+atm2.snaive <- snaive(atm2.train,h=31, biasadj=T)
+
+accuracy(atm2.snaive)
+```
+```{r}
+autoplot(atm2.snaive, PI = F) +
+  theme_light() +
+  labs(title="Withdrawals from ATM2",
+       subtitle = "Seasonal Naive Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+Visually, there appears to be a bit of a downward trend in the data, but this Seasonal Naive model doesn’t take that into account. This might not be a good model, so we’ll keep looking.
+
+We’ll try Holt-Winters as our second model:
+
+```{r}
+# Use Holt-Winters method
+atm2.hw <- hw(atm2.train, seasonal = "additive", h=31, biasadj = T)
+
+accuracy(atm2.hw)
+```
+Our chosen error metrics: RMSE and MASE, both decrease compared to the Seasonal Naive model above.
+
+
+```{r}
+autoplot(atm2.hw, PI = F) +
+  theme_light() +
+  labs(title="Withdrawals from ATM2",
+       subtitle = "Holt-Winters Seasonal Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+We see that this model does use some of the downward trend we saw, though not much.
+
+Finally, we’ll try ARIMA on these data:
+
+```{r}
+atm2.arima <- auto.arima(atm2.train)
+
+atm2.arima
+```
+
+Interestingly, the auto.arima() function chose a different model than it did for the ATM1 data. Let’s check the accuracy measures:
+
+```{r}
+accuracy(atm2.arima)
+```
+The ARIMA model has very nearly the same RMSE and MASE that the Holt-Winter model did.
+
+
+```{r}
+atm2.pred <- forecast(atm2.arima,h=31)
+
+autoplot(atm2.pred, PI=T) + theme_light() +
+  labs(title="Withdrawals from ATM2",
+       subtitle = "ARIMA(0,0,0)(0,1,2)[7] Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+We’ll check the accuracy over the testing data set to see how well the models generalize:
+
+```{r}
+# Check test set accuracy measures
+testMeasures <- cbind(method = "Seasonal Naive", 
+                      data.frame(
+                        as.list(accuracy(atm2.snaive, atm1.test)["Test set",])
+                      ))
+
+testMeasures <- rbind(testMeasures,
+  cbind(method = "Holt-Winters", 
+                      data.frame(
+                        as.list(accuracy(atm2.hw, atm1.test)["Test set",])
+                      ))
+)
+
+atm2.pred <- Arima(atm2.test,model=atm2.arima,h=31, biasadj=T)
+
+testMeasures <- rbind(testMeasures,
+  cbind(method = "ARIMA", 
+                      data.frame(
+                        as.list(accuracy(atm2.pred)["Training set",])
+                      ), Theil.s.U = NA))
+
+testMeasures %>% select(method, RMSE, MASE) %>%
+  kable() %>% kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+As before, ARIMA does better with data it has not seen. So, we’ll use this model to make our forecasts:
+
+```{r}
+atm2.forecast <- forecast(atm2, model = atm2.arima, h=31, biasadj = T)
+
+atm2.forecast %>%
+  kable() %>% kable_styling(bootstrap_options = "striped") %>%
+  scroll_box(width = "100%", height = "200px")
+```
+
+```{r}
+# Output point forecasts
+output <- cbind(date = seq(from=as.Date("2010-05-01"),
+                           to=as.Date("2010-05-31"),by=1),
+      point_forecast = as.data.frame(atm2.forecast$mean))
+
+write.xlsx(output,"forecast_ATM2.xlsx")
+
+autoplot(atm2.forecast, PI=T) +
+  theme_light() +
+  labs(title="Withdrawals from ATM2",
+       subtitle = "ARIMA(0,0,0)(0,1,2)[7] Forecasts",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+### ATM3
+Given the fact that there are only 3 data points for ATM3, there isn’t a good model choice. The best we could likely do is a naive forecast, but even that I would not be comfortable using in practice:
+
+
+```{r}
+autoplot(atm3) + autolayer(naive(atm3)) 
+```
+
+### ATM4
+The data for ATM4, as mentioned above, seemed to have no real seasonal pattern and almost resembled white noise. So, we’ll take a slightly different approach.
+
+First, though, we will check to see if a Box-Cox transformation is useful:
+
+```{r}
+l <- BoxCox.lambda(atm4)
+atm4.trans <- BoxCox(atm4,lambda=l)
+
+autoplot(cbind(original = atm4, transformed=atm4.trans), facets=T) +
+  theme_light() +
+  labs(title="Withdrawals from ATM4", y="Amount (100's of $)",
+       x="Week")
+```
+
+The transformation did reduce some of the variance, so we’ll keep it.
+
+Next, we’ll see if there is any evidence of seasonality that we did not see in the overall plot.
+
+
+```{r}
+ggAcf(atm4.trans)
+```
+
+Surprisingly, there does appear to be some weekly seasonality like ATM1 and ATM2. We’ll split the data and use an STL decomposition to see what that looks like:
+
+```{r}
+atm4.train <- subset(atm4.trans,end=length(atm2.trans)-60)
+atm4.test <- subset(atm4.trans, start=length(atm2.trans)-59)
+```
+
+```{r}
+atm4.decomp <- stl(atm4.train, s.window="periodic")
+autoplot(atm4.decomp)
+```
+
+The stl() function seemed to tease out the seasonality pretty well. We’ll try to use this decomposition to forecast, and see how well it does:
+
+```{r}
+atm4.stl <- seasadj(atm4.decomp) %>% snaive(h=31)
+
+accuracy(atm4.stl)
+```
+
+
+```{r}
+atm4.stl %>% autoplot() +
+  labs(title="Withdrawals from ATM4", 
+       subtitle="STL Seasonal Naive Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+The STL method does ok, but we can probably do better. We’ll try a Holt-Winter model:
+
+```{r}
+atm4.hw <- hw(atm4.train, h = 31, seasonal = "additive", biasadj = T,
+              lambda=l)
+
+accuracy(atm4.hw)
+```
+
+The Holt-Winter model does well in both RMSE and MASE. Let’s plot the results and see what the model predictions look like based on the training data:
+
+
+```{r}
+autoplot(atm4.hw, PI = T) +
+  theme_light() +
+  labs(title="Withdrawals from ATM4",
+       subtitle = "Holt-Winters Seasonal Model",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+The predictions look ok, though they have a large prediction interval.
+
+Finally, we try an ARIMA model next to see if it works better:
+
+```{r}
+atm4.arima <- auto.arima(atm4.train, biasadj = T)
+
+atm4.arima
+```
+
+The auto.arima() function chose an ARIMA(0,0,1)(2,0,0)[7]
+ model. We’ll first check the accuracy measures on the training set and then plot them.
+
+```{r}
+accuracy(atm2.arima)
+```
+
+
+```{r}
+atm4.pred <- forecast(atm4.arima,h=31)
+
+autoplot(atm4.pred, PI=T) + theme_light() +
+  labs(title="Withdrawals from ATM4",
+       subtitle = "ARIMA(0,0,1)(2,0,0)[7] Model",
+       y="Amount (100's of $)",
+       x="Week")
+
+```
+
+The RMSE accuracy measure appears better than the STL Seasonal Naive model, but the MASE is actually a bit worse. Also, looking at the graph above, the predictions don’t look very stable.
+
+We’ll check the residuals next:
+
+
+
+```{r}
+checkresiduals(atm4.arima)
+```
+
+The residuals aren’t exactly normal, though there appear to be no significant correlations between them and the Ljung-Box confirms the same.
+
+Finally, let’s look at all of the models’ performance with the test data:
+
+```{r}
+# Check test set accuracy measures
+testMeasures <- cbind(method = "STL", 
+                      data.frame(
+                        as.list(accuracy(atm4.stl, atm4.test)["Test set",])
+                      ))
+
+testMeasures <- rbind(testMeasures,
+  cbind(method = "Holt-Winters", 
+                      data.frame(
+                        as.list(accuracy(atm4.hw, atm4.test)["Test set",])
+                      ))
+)
+
+atm4.pred <- Arima(atm4.test,model=atm4.arima,biasadj=T)
+
+testMeasures <- rbind(testMeasures,
+  cbind(method = "ARIMA", 
+                      data.frame(
+                        as.list(accuracy(atm4.pred)["Training set",])
+                      ), Theil.s.U = NA))
+
+testMeasures %>% select(method, RMSE, MASE) %>%
+  kable() %>% kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Surprisingly, the ARIMA model does better than all the others in terms of our chosen accuracy measures on the test data set. However, the instability of the model predictions makes me hesitant to use it.
+
+In conclusion, I would choose the Holt-Winter model here, despite it’s worse performance in accuracy measures, because I feel it provides more stable predictions of the three models.
+
+
+```{r}
+atm4.forecast <- forecast(atm4.trans, model=atm4.hw, h=31,
+                          use.initial.values=TRUE,
+                          biasadj = T)
+
+atm4.forecast %>%
+  kable() %>% kable_styling(bootstrap_options = "striped") %>%
+  scroll_box(width = "100%", height = "200px")
+```
+
+```{r}
+# Output point forecasts
+output <- cbind(date = seq(from=as.Date("2010-05-01"),
+                           to=as.Date("2010-05-31"),by=1),
+      point_forecast = as.data.frame(InvBoxCox(atm4.forecast$mean,lambda=l)))
+
+write.xlsx(output,"forecast_ATM4.xlsx")
+
+autoplot(atm4.forecast, PI=T) +
+  theme_light() +
+  labs(title="Withdrawals from ATM4",
+       subtitle = "Holt-Winters Forecasts",
+       y="Amount (100's of $)",
+       x="Week")
+```
+
+
+
+# Part B - Forecasting Power
+
+
+### Read in Data
+
+The date column needs to be adjusted to a yearmonth date rather than a character. There is also a missing value in the `KWH` column. I will replace the missing value with the prior year value of the same month. For example, the missing value for September, 2008 will be filled with the September, 2007 KWH value. 
+
+```{r}
+b <- read_excel("ResidentialCustomerForecastLoad-624.xlsx")
+
+head(b)
+
+b <- b %>%
+        rename(YearMonth = "YYYY-MMM") %>%
+        mutate(YearMonth = yearmonth(YearMonth))
+
+b.data <- as_tsibble(b, index = YearMonth) 
+
+head(b.data)
+
+summary(b.data$KWH)
+```
+
+```{r}
+paste0("Num of missing values: ", sum(is.na(b.data)))
+paste0("Row index of NA value: " ,which(is.na(b.data$KWH)))
+b.data[129,]
+```
+
+
+```{r}
+b.data[129,3] <- b.data[117,3]
+```
+
+```{r}
+paste0("Num of missing values: ", sum(is.na(b.data)))
+```
+
+
+### Data Exploration
+
+
+The data is seasonal and contains and outlier for July 2010 with a much lower power usage than any other month. There also appears to be a slight upward trend in energy usage which could be due to a rise / fall in local temperature month over month especially during summer and winter months. The outlier will be replaced with the previous year's value for that month (Ex July 2010 will be replaced with July 2009).
+
+```{r}
+b.data %>%
+        autoplot(KWH) +
+        ggtitle("Residential Customer Power Consumption w/ Outlier")
+```
+
+```{r}
+paste0("Row index of outlier: " ,which.min(b.data$KWH))
+b.data[151,]
+```
+
+
+```{r}
+b.data[151,3] <- b.data[139,3]
+```
+
+
+```{r}
+b.data %>%
+        autoplot(KWH) +
+        ggtitle("Residential Customer Power Consumption w/ Adjusted Outlier")
+```
+
+
+
+### Data Modeling
+
+#### Check if Data is Stationary
+
+Like in Part A, checking the stationarity of the time series is key to using ARIMA models. The data appears to have strong seasonal autocorrelation every 12 months. After taking 1 seasonal difference the data appears to be stationary.
+
+```{r}
+gg_tsdisplay(b.data, y = KWH, plot_type='partial') +
+        ggtitle("Before Differencing")
+```
+
+```{r}
+b.data %>%
+  features(KWH, unitroot_kpss, lag = 12)
+```
+
+```{r}
+nsd <- b.data %>%
+  features(KWH, unitroot_nsdiffs, lag = 12)
+
+paste0("Number of Seasonal differences needed for stationarity: ", nsd$nsdiffs)
+```
+
+
+```{r}
+b.data %>%
+  features(difference(KWH, lag = 12), unitroot_kpss)
+```
+
+
+```{r}
+gg_tsdisplay(b.data, difference(KWH, lag = 12), plot_type='partial') +
+        ggtitle("ATM1 After Differencing")
+```
+
+```{r}
+b.data <- b.data %>%
+        mutate(diff_KWH = difference(KWH, lag = 12))
+```
+
+
+### Model Creation
+
+A few different models with varying degrees of complexity were created to attempt to find a model that could be effective in forecasting future consumer power usage. Basic models like MEAN and SNAIVE were used as well as more complicated ETS and ARIMA models. Each model will be compared to find the best fitting model to use for forecasting.
+
+```{r}
+fit5 <- b.data %>%
+  model(
+        MEAN = MEAN(KWH),
+        SNAIVE = SNAIVE(KWH),
+        ETS_Additive = ETS(KWH ~ error("A") + trend("A") + season("A")),
+        ETS_Multiplicative = ETS(KWH ~ error("M") + trend("A") + season("M")),
+        #ETS_Additive_Boxcox = ETS(box_cox(KWH, lambda) ~ error("A") + trend("N") + season("A")),
+        #ETS_Multiplicative_Boxcox  = ETS(box_cox(KWH, lambda) ~ error("M") + trend("N") + season("M"))
+        ARIMA = ARIMA(KWH)
+        )
+```
+
+
+
+### Model Evaluation
+
+The ARIMA(0,0,4)(2,1,0)[12] w/ drift model outperformed all of the other models in terms of RMSE and MAE. This model will be used for forecasting.
+
+```{r}
+# acc.met <- fit1 %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+# acc.met2 <- fit1.arima %>%
+#        glance() %>%
+#        select(.model:BIC)
+
+#acc <- rbind(acc.met, acc.met2)
+
+#acc.met10 <- fit5 %>%
+#        accuracy() %>%
+#        select(.model, RMSE, MAE)
+
+# RMSE2 <- fit1.arima %>%
+#        accuracy() %>%
+#        select(RMSE)
+
+#rmse <- rbind(RMSE, RMSE2)
+
+#kableExtra::kable(cbind(acc.met, acc.met2))
+
+# kableExtra::kable(acc.met10)
+```
+
+
+
+### Model Diagnostics
+
+The ARIMA(0,0,4)(2,1,0)[12] w/ drift meet most of the expectations for model forecasting. The AFC plot shows that innovation residuals are likely from white noise. The mean of the innovation residuals are close to zero given the scale of the innovation residuals is in the millions (mean = -8653). The homoscedascity property is not met, however, as the variance changes throughout the series. Finally the data is not exactly from a normal distribution. The homoscedascity and normality properties are helpful but not necessary for forecasting.
+
+```{r}
+fit5.forecast <- b.data %>%
+  model(
+        ARIMA = ARIMA(KWH)
+        )
+
+fit5.forecast %>%
+        gg_tsresiduals()
+```
+
+```{r}
+resid <- residuals(fit5.forecast, type = "innovation")
+mean(resid$.resid) 
+```
+
+
+
+### Forecast
+
+The forecast for the Electricity Consumption is provided below. The forecasts have been stored in a .csv file that will be up on my Github and attached to the Project submission.
+
+```{r}
+fc5.final <- fit5.forecast %>%
+  forecast(h = "1 year")
+
+
+fc5.final %>%
+  autoplot(b.data) +
+  ggtitle("Residential Power Consumption: ARIMA(0,0,4)(2,1,0)[12] w/ drift Forecast")
+```
+
+
+
