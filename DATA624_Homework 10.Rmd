@@ -1,0 +1,114 @@
+---
+title: "DATA 624 Homework 10"
+output:
+  html_document:
+    highlight: pygments
+    theme: cerulean
+    toc: true
+    toc_float: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+#### Name: Charles Ugiagbe.
+#### Date: 12/16/23
+
+
+###   Homework Intro 
+The aim of this assigment is to use  is to use R to mine the data for association rules. You should report support, confidence and lift and your top 10 rules by lift.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(arules)
+library(igraph)
+```
+
+
+### load the data
+
+```{r}
+receipt.df <- read.csv("GroceryDataSet.csv")
+```
+
+
+### Take a head look at the data
+```{r}
+head(receipt.df)
+```
+
+### Market Analysis
+we need to first read in and explore the data by looking at the top 15 item purchase.
+
+```{r}
+data.df <- read.transactions("GroceryDataSet.csv", sep=",")
+itemFrequencyPlot(data.df, topN=15, type="absolute", main="Top 15 Items", col=rainbow(15))
+```
+**Whole milk is the most frequently purchased item.**
+
+
+### Association Rules
+
+In order to complete this market basket analysis, the Apriori algorithm is initiated to print out the top 10 rules with their support, confidence and lift.
+To find the association rules, we will use the ‘apriori’ function.
+
+```{r}
+rules<- apriori(data.df, parameter=list(supp=0.001, conf=0.5) , control=list(verbose=FALSE))
+summary(rules)
+```
+
+```{r}
+apriori(data.df, parameter=list(supp=0.001, conf=0.5) , control=list(verbose=FALSE)) %>%
+  DATAFRAME() %>%
+  arrange(desc(lift)) %>%
+  top_n(10) %>%
+  kable() %>%
+  kable_styling()
+```
+
+### Cluster Analysis
+
+We are to look for item groupings. A network graph can be use to preform the cluster analysis. First I will need to create a network graph from the transaction data. The I will detect the communities in the graph using the Louvain algorthym.
+
+```{r}
+temp <- read.csv("GroceryDataSet.csv", header = FALSE) %>%
+  mutate(shoper_id = row_number()) %>%
+  pivot_longer(-shoper_id) %>%
+  filter(value != "") %>%
+  select(-name)
+
+louvain_communities <- temp %>%
+  rename(to = value, from = shoper_id) %>%
+  graph_from_data_frame(directed = FALSE) %>%
+  cluster_louvain() %>%
+  communities()
+```
+
+
+```{r}
+items <- as.character(unique(temp$value))
+
+cluster_df <- data.frame(name = c(NA), members = c(NA)) %>% na.omit()
+
+for (i in 1:length(louvain_communities)){
+  cluster_name <- paste0(i,": ")
+  cluster_members <- 0
+  for (member in louvain_communities[[i]]){
+    if (member %in% items){
+      cluster_name <- paste0(cluster_name, member, " + ")
+    } else {
+      cluster_members <- cluster_members + 1
+    }
+  }
+  cluster_name <- substr(cluster_name,1,nchar(cluster_name)-3)
+  cluster_df <- rbind(cluster_df, data.frame(name = cluster_name, members = cluster_members))
+}
+
+cluster_df %>%
+  arrange(desc(members)) %>%
+  kable() %>%
+  kable_styling()
+```
+
+
+
